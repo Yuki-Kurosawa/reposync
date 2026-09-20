@@ -1,0 +1,23 @@
+# 上游源定义（DEB822）——本地"伪远程"仓库 A，reposync 从这里拉索引/包
+# 放在 /etc/reposync/sources.list.d/ 或测试时用 REPOSYNC_CONFIG_DIR 指向
+Types: deb
+URIs: http://127.0.0.1:8931/upstream
+Suites: trixie
+Components: main
+Architectures: amd64
+
+# 目标仓库 apt 源视图（DEB822）——本地仓库 B
+# 这是纯 apt 源文件：扔进 /etc/apt/sources.list.d/ 后 apt 可直接对接 B
+# （不包含任何 reposync 专用字段，避免 apt 困惑）
+Types: deb
+URIs: http://127.0.0.1:8931/target
+Suites: trixie
+Components: main
+Architectures: amd64
+Trusted: yes
+
+# reposync 专用配置 target.conf（/etc/reposync/target.conf，apt 不读）
+# 真操作通过正常仓库工具集（此处 reprepro）执行，索引/校验由它负责
+# Path: /srv/reposync/target
+# Import-Cmd: reprepro -b /srv/reposync/target includedeb trixie
+# Remove-Cmd: reprepro -b /srv/reposync/target remove trixie

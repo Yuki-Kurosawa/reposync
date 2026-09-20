@@ -1,0 +1,6 @@
+Ign:1 http://127.0.0.1:8937/target trixie InRelease
+Get:2 http://127.0.0.1:8937/target trixie Release [871 B]
+Ign:3 http://127.0.0.1:8937/target trixie Release.gpg
+Get:4 http://127.0.0.1:8937/target trixie/main amd64 Packages [815 B]
+Fetched 1,686 B in 0s (63.4 kB/s)
+Reading package lists...
