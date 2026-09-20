@@ -1,23 +1,29 @@
 #!/bin/bash
 # cli-chroot-test.sh - "sync correctness" verification per 需求.md 验证方式:
-#   往目标仓库里添加 bash -> 尝试展开系统 -> chroot 能看到 bash 提示符。
+#   往目标仓库添加包 -> 用官方 debootstrap 展开系统 -> chroot 看到 bash 提示符。
 #
-# The target repo is managed by ONE tool (reprepro): reposync's Import-Cmd
-# IS reprepro's own import command (`reprepro includedeb trixie <deb>`), so
-# pool placement AND index generation are both done by the same tool — no
-# A-tool-import + B-tool-index mashup. reposync only syncs: update, resolve
-# the dep closure, download, and hand each .deb to the configured manager.
+# Target repo is managed by ONE tool (reprepro): reposync's Import-Cmd IS
+# reprepro's own import command, so pool placement + index generation are
+# both done by the same tool. reposync only syncs: update, resolve closure,
+# download, hand each .deb to the configured manager.
+#
+# The "required package list" for the expansion comes from debootstrap's own
+# definition: --variant=minbase installs exactly the packages with
+# Priority: important (get_debs), so we extract that list from the upstream
+# index and reposync-install it into the target. (How the list is maintained
+# for the future live-ISO is the user's own follow-up.)
 #
 # Run as root:  wsl -d Debian -u root -e bash cli-chroot-test.sh
 set -u
 cd /mnt/d/Repo/LinuxTestDrive/reposync || exit 1
 [ "$(id -u)" = 0 ] || { echo "need root (chroot)"; exit 1; }
 command -v reprepro >/dev/null || { echo "need reprepro"; exit 1; }
-command -v dpkg-deb >/dev/null || { echo "need dpkg-deb"; exit 1; }
+command -v debootstrap >/dev/null || { echo "need debootstrap"; exit 1; }
 
 R=/tmp/rtc
+umount -R $R/rootfs/dev 2>/dev/null || true
 rm -rf $R
-mkdir -p $R/conf/sources.list.d $R/lists $R/dl $R/rootfs $R/target/conf
+mkdir -p $R/conf/sources.list.d $R/lists $R/dl $R/target/conf
 
 # ---- upstream: real Debian trixie over http ----
 cat > $R/conf/sources.list.d/debian.sources <<'EOF'
@@ -71,55 +77,50 @@ export REPOSYNC_MANUAL=$R/manual
 echo "=== 1 update from real Debian trixie (http) ==="
 ./reposync update || { echo "UPDATE FAILED"; exit 1; }
 
-echo "=== 2 install bash -> reprepro imports + regenerates index ==="
-./reposync install -y bash || { echo "INSTALL FAILED"; exit 1; }
+echo "=== 2 required list = debootstrap's minbase definition (Priority: required + apt) ==="
+: > $R/important.txt
+for f in $R/lists/*_Packages; do
+  awk '/^Package:/{pkg=$2} /^Priority: required/{print pkg}' "$f"
+done | sort -u > $R/important.txt
+echo "apt" >> $R/important.txt
+sort -u $R/important.txt -o $R/important.txt
+echo "required+apt packages: $(wc -l < $R/important.txt)"
+grep -E '^(bash|dpkg|coreutils|libc6|apt|debconf|tar|gzip)$' $R/important.txt | tr '\n' ' '; echo
+# debootstrap (debian-common): minbase base="apt", and for trixie the
+# Priority: required set is ALWAYS included (any non-buildd variant).
+# bash is required, so the target system gets it automatically.
+echo "sync list size: $(wc -l < $R/important.txt)"
 
-echo "=== 3 target index written by reprepro ==="
-ls -la $R/target/dists/trixie/main/binary-amd64/ $R/target/dists/trixie/Release
-grep -E '^Package: (bash|libc6|libtinfo6)$' $R/target/dists/trixie/main/binary-amd64/Packages | sort
-echo "pool files:"
-find $R/target/pool -name '*.deb' | sort
+echo "=== 3 install the list -> reprepro imports + regenerates index ==="
+./reposync install -y $(cat $R/important.txt) > $R/install.log 2>&1 \
+  || { echo "INSTALL FAILED"; tail -20 $R/install.log; exit 1; }
+grep -c '^  imported ' $R/install.log | xargs echo "imported:"
+tail -3 $R/install.log
 
-echo "=== 4 target repo usable as a source (over http) ==="
-mkdir -p $R/conf2/sources.list.d $R/lists2
-cat > $R/conf2/sources.list.d/target.sources <<'EOF'
-Types: deb
-URIs: http://127.0.0.1:8891
-Suites: trixie
-Components: main
-Architectures: amd64
-Trusted: yes
+echo "=== 4 target index written by reprepro ==="
+ls -la $R/target/dists/trixie/main/binary-amd64/Packages
+echo "packages in target index: $(grep -c '^Package:' $R/target/dists/trixie/main/binary-amd64/Packages)"
+grep -E '^Package: (bash|dpkg|coreutils|libc6|apt|debconf)$' $R/target/dists/trixie/main/binary-amd64/Packages | sort | tr '\n' ' '; echo
 
-EOF
+echo "=== 5 debootstrap (official) expands a system from the target repo ==="
 python3 -m http.server 8891 --bind 127.0.0.1 --directory $R/target >/dev/null 2>&1 &
 SRV=$!
 trap "kill $SRV 2>/dev/null" EXIT
 sleep 1
-REPOSYNC_CONFIG_DIR=$R/conf2/sources.list.d REPOSYNC_LIST_DIR=$R/lists2 REPOSYNC_DB=$R/db2 \
-  ./reposync update || { echo "TARGET-SOURCE UPDATE FAILED"; exit 1; }
-REPOSYNC_DB=$R/db2 ./reposync list bash || { echo "TARGET-SOURCE LIST FAILED"; exit 1; }
-
-echo "=== 5 expand a minimal system from the target repo ==="
-awk '/^Package:/{print $2}' $R/target/dists/trixie/main/binary-amd64/Packages > $R/pkgs.txt
-cat $R/pkgs.txt
-N=0
-while read -r p; do
-  REPOSYNC_DB=$R/db2 REPOSYNC_LIST_DIR=$R/lists2 ./reposync download "$p" -o $R/dl >/dev/null || { echo "download $p failed"; exit 1; }
-  N=$((N+1))
-done < $R/pkgs.txt
-echo "downloaded $N .deb(s), size:"
-du -sh $R/dl
-for f in $R/dl/*.deb; do dpkg-deb -x "$f" $R/rootfs || { echo "unpack $f failed"; exit 1; }; done
-echo "rootfs /bin:"
-ls $R/rootfs/bin/ 2>/dev/null | head -5
+# --no-check-gpg: reprepro test repo is unsigned (signing is the follow-up
+# for the future live-ISO, same as the package-list maintenance).
+# minbase = apt + Priority: required (per debian-common), so bash is inside.
+debootstrap --no-check-gpg --variant=minbase --arch=amd64 \
+  trixie $R/rootfs http://127.0.0.1:8891 \
+  > $R/debootstrap.log 2>&1 || { echo "DEBOOTSTRAP FAILED"; tail -25 $R/debootstrap.log; exit 1; }
+echo "debootstrap ok. rootfs /bin:"
+ls $R/rootfs/bin/ 2>/dev/null | tr '\n' ' '; echo
+du -sh $R/rootfs
 
 echo "=== 6 chroot must see a bash prompt ==="
-mkdir -p $R/rootfs/dev
-mknod -m 666 $R/rootfs/dev/null c 1 3 2>/dev/null || true
-mknod -m 666 $R/rootfs/dev/zero c 1 5 2>/dev/null || true
 PS1_OUT=$(chroot $R/rootfs /bin/bash -i -c 'printf "%s" "$PS1"' 2>/dev/null)
 echo "chroot bash PS1=[$PS1_OUT]"
 [ -n "$PS1_OUT" ] || { echo "FAIL: no bash prompt in chroot"; exit 1; }
-chroot $R/rootfs /bin/bash -c 'echo "bash runs inside chroot"' || { echo "FAIL: bash cannot run"; exit 1; }
+chroot $R/rootfs /bin/bash -c 'echo "bash runs inside debootstrap-expanded chroot"' || { echo "FAIL: bash cannot run"; exit 1; }
 
 echo "=== CLI CHROOT TEST PASS (bash prompt: $PS1_OUT) ==="
