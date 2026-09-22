@@ -54,6 +54,7 @@ Trusted: yes
 EOF
 cat > $R/conf/reposync.conf <<'EOF'
 Active-Repo: plain
+Sync-Sources: no
 
 Repo-Type: plain
 Path: /tmp/rt-http/local-target

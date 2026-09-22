@@ -34,11 +34,14 @@ typedef struct {
     size_t hcap;
 } pkgset_t;
 
-/* Candidate from remote Packages index (extends pkg_t with sizes). */
+/* Candidate from remote Packages index (extends pkg_t with sizes and the
+   source-suite attribution needed for sync suite mapping). */
 typedef struct {
     pkg_t p;
     long long size;
     long long installed_size;
+    char *suite;   /* upstream suite this candidate came from (cache .meta) */
+    char *comp;    /* upstream component this candidate came from */
 } cand_t;
 
 typedef struct {
@@ -83,6 +86,61 @@ typedef struct {
    and queues missing ones (repo repair). sim uses 0; repo ops use 1. */
 int sim_closure_solve(pkgset_t *ps, candset_t *cs, const char *native,
                       const str_list *targets, closure_t *cl, int ensure_deps);
+
+/* ---------------- Sources (source packages) ---------------- */
+
+/* One source package record (a Sources index entry). */
+typedef struct {
+    char *name;           /* Package */
+    char *version;        /* Version */
+    char *binary;         /* Binary: comma-separated binary package names */
+    char *build_depends;  /* Build-Depends */
+    char *directory;      /* Directory (pool-relative path of the .dsc family) */
+    char *files;          /* Files: raw multi-line value (md5 size name) */
+    char *uri;            /* base URI of the source (from the cache .meta) */
+    char *suite;          /* upstream suite this source came from */
+    char *comp;           /* upstream component this source came from */
+} srcpkg_t;
+
+/* Indexed set of source packages, with a reverse hash
+   "binary package name -> source package" built from Binary:. */
+typedef struct {
+    srcpkg_t *items;
+    size_t n, cap;
+    int *hash;
+    size_t hcap;
+    char **balias;    /* binary alias names (one per Binary: entry) */
+    size_t *bsrc;     /* alias -> source items index */
+    size_t bn, bcap;
+    int *bhash;       /* alias name -> balias index+1 */
+    size_t bhcap;
+} srcset_t;
+
+void srcset_init(srcset_t *ss);
+void srcset_free(srcset_t *ss);
+srcpkg_t *srcset_find(srcset_t *ss, const char *name);
+/* Insert (or version-merge) a source record identified by name/version;
+   returns the stored record (other fields zeroed/NULL). */
+srcpkg_t *srcset_put(srcset_t *ss, const char *name, const char *version);
+/* Reverse lookup: the source package that builds binary package bin. */
+srcpkg_t *srcset_find_bin(srcset_t *ss, const char *bin);
+/* Load source records from cached lists dir (*_Sources files + .meta URI).
+   Returns 0 on success. */
+int srcset_load(const char *list_dir, srcset_t *ss);
+
+/* Bidirectional closure (需求.md "Sources 同步"):
+   from the target package names, expand both the binary side
+   (Depends + Pre-Depends of every reached binary package) and the source side
+   (Build-Depends of every reached source package, plus Binary: of every
+   reached source package); a reached binary pulls in its source package and a
+   reached source pulls in its binary packages, recursing to a fixpoint.
+   out_bin / out_src receive the reached binary / source package names
+   (deduplicated, source side only the source names; the binary side is a
+   superset needed to derive the sources — callers normally reuse their own
+   binary closure instead). Returns 0 on success, -1 if a target cannot be
+   located either as a binary or as a source package. */
+int sim_source_closure(candset_t *cs, srcset_t *ss, const char *native,
+                       const str_list *targets, str_list *out_bin, str_list *out_src);
 
 /* Simulated maintenance operations. Return 0 on success.
    These never invoke dpkg/apt; they only update the SQLite db. */

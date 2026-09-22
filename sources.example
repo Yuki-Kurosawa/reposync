@@ -21,3 +21,14 @@ Trusted: yes
 # Path: /srv/reposync/target
 # Import-Cmd: reprepro -b /srv/reposync/target includedeb trixie
 # Remove-Cmd: reprepro -b /srv/reposync/target remove trixie
+#
+# 同步套件映射（cli/gui 共用，见 需求.md 套件映射）：
+#   1. 包优先进入与上游"同名"的目标套件（组件也须同名，跨组件不允许）；
+#   2. 目标没有该套件、且它是 "<基础套件>-*" 变体（如 abc-updates）时，
+#      回退进基础套件 abc（前提：目标完全没有该变体套件）；
+#   3. 其余情况（含 abc -> abc-* 反向、跨组件）不允许，跳过并警告。
+# 基础套件 = target.sources 里 Suites: 的第一个。
+# 目标声明多个套件时，Import-Cmd/Source-Import-Cmd 必须用 %suite% 占位：
+# Suites: trixie trixie-updates
+# Import-Cmd: reprepro -b /srv/reposync/target includedeb %suite%
+# Source-Import-Cmd: reprepro -b /srv/reposync/target includedsc %suite%

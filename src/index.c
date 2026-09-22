@@ -62,29 +62,35 @@ static int src_from_rec(const d822_rec *r, src_t **out, size_t *n)
         sl_push(&arches, native_deb_arch());
     }
 
-    size_t i;
+    /* one src_t per (URI, suite): a single .sources record may declare
+       several suites (e.g. "Suites: trixie trixie-updates") and each suite
+       must be indexed separately so a package keeps its source-suite
+       attribution for the sync suite mapping. */
+    size_t i, su;
     for (i = 0; i < uris.n; i++) {
-        src_t *ns = xrealloc(*out, (*n + 1) * sizeof(src_t));
-        *out = ns;
-        src_t *s = &(*out)[*n];
-        memset(s, 0, sizeof *s);
-        s->uri = xstrdup(uris.items[i]);
-        sl_init(&s->comps);
-        sl_init(&s->arches);
+        for (su = 0; su < (suites.n ? suites.n : 1); su++) {
+            src_t *ns = xrealloc(*out, (*n + 1) * sizeof(src_t));
+            *out = ns;
+            src_t *s = &(*out)[*n];
+            memset(s, 0, sizeof *s);
+            s->uri = xstrdup(uris.items[i]);
+            sl_init(&s->comps);
+            sl_init(&s->arches);
 
-        /* expand suites (default "." flat) */
-        if (suites.n == 0) {
-            s->suite = xstrdup(".");
-        } else {
-            s->suite = xstrdup(suites.items[0]);
+            /* expand suites (default "." flat) */
+            if (suites.n == 0) {
+                s->suite = xstrdup(".");
+            } else {
+                s->suite = xstrdup(suites.items[su]);
+            }
+
+            /* components: if empty, flat repo (suite ".") has no component dir */
+            for (size_t j = 0; j < comps.n; j++)
+                sl_push(&s->comps, comps.items[j]);
+            for (size_t j = 0; j < arches.n; j++)
+                sl_push(&s->arches, arches.items[j]);
+            (*n)++;
         }
-
-        /* components: if empty, flat repo (suite ".") has no component dir */
-        for (size_t j = 0; j < comps.n; j++)
-            sl_push(&s->comps, comps.items[j]);
-        for (size_t j = 0; j < arches.n; j++)
-            sl_push(&s->arches, arches.items[j]);
-        (*n)++;
     }
 
     sl_free(&uris); sl_free(&suites); sl_free(&comps); sl_free(&arches);
@@ -289,7 +295,68 @@ static int fetch_one_release(const char *list_dir, const src_t *s)
     return 0;
 }
 
-int idx_update(const char *list_dir, src_t *srcs, size_t n)
+static int fetch_one_sources_index(const char *list_dir, const src_t *s,
+                                   const char *comp)
+{
+    if (is_flat(s))
+        return 0; /* flat repos have no source index */
+    char keybuf[4096];
+    snprintf(keybuf, sizeof keybuf, "sources|%s|%s|%s", s->uri, s->suite, comp);
+    char hash[17];
+    fnv1a64_hex(keybuf, hash);
+    char fname[64];
+    snprintf(fname, sizeof fname, "%s_Sources", hash);
+    char *cache_path = path_join(list_dir, fname);
+
+    sb_t url, baseurl;
+    sb_init(&url); sb_init(&baseurl);
+    sb_printf(&baseurl, "%s/dists/%s/%s/source/", s->uri, s->suite, comp);
+
+    static const char *cands[] = { "Sources.gz", "Sources", "Sources.zst", NULL };
+    int i;
+    for (i = 0; cands[i]; i++) {
+        sb_reset(&url);
+        sb_append_str(&url, baseurl.s);
+        sb_append_str(&url, cands[i]);
+        sb_t raw;
+        sb_init(&raw);
+        if (fetch_url_to_mem(url.s, &raw) < 0) {
+            sb_free(&raw);
+            continue;
+        }
+        const char *fmt = "";
+        if (strcmp(cands[i], "Sources.gz") == 0)
+            fmt = "gz";
+        else if (strcmp(cands[i], "Sources.zst") == 0)
+            fmt = "zst";
+        sb_t plain;
+        sb_init(&plain);
+        if (decompress_mem(raw.s, raw.len, fmt, &plain) < 0) {
+            fprintf(stderr, "reposync: decompress failed for %s\n", url.s);
+            sb_free(&raw);
+            sb_free(&plain);
+            continue;
+        }
+        if (write_file(cache_path, plain.s, plain.len, 0644) < 0) {
+            fprintf(stderr, "reposync: write %s failed\n", cache_path);
+        }
+        meta_write(list_dir, fname, "Sources", s, comp, NULL);
+        printf("  got %s (raw %zu -> %zu bytes, %zu source packages)\n",
+               url.s, raw.len, plain.len, count_records(plain.s, plain.len));
+        sb_free(&raw);
+        sb_free(&plain);
+        free(cache_path);
+        sb_free(&url); sb_free(&baseurl);
+        return 0;
+    }
+
+    fprintf(stderr, "reposync: no Sources index found at %s\n", baseurl.s);
+    free(cache_path);
+    sb_free(&url); sb_free(&baseurl);
+    return -1;
+}
+
+int idx_update(const char *list_dir, src_t *srcs, size_t n, int sync_sources)
 {
     if (mkdir_p(list_dir, 0755) < 0) {
         fprintf(stderr, "reposync: cannot create %s: %s\n", list_dir, strerror(errno));
@@ -303,6 +370,10 @@ int idx_update(const char *list_dir, src_t *srcs, size_t n)
         for (j = 0; j < s->comps.n; j++) {
             for (k = 0; k < s->arches.n; k++) {
                 if (fetch_one_index(list_dir, s, s->comps.items[j], s->arches.items[k]) < 0)
+                    errors++;
+            }
+            if (sync_sources > 0) {
+                if (fetch_one_sources_index(list_dir, s, s->comps.items[j]) < 0)
                     errors++;
             }
         }
@@ -332,8 +403,11 @@ static void cand_free(cand_t *c)
     free(c->version); free(c->filename); free(c->arch); free(c->uri); free(c->suite);
 }
 
-static int read_meta(const char *meta_path, char **uri, char **suite)
+int idx_read_meta(const char *meta_path, char **uri, char **suite, char **comp)
 {
+    if (uri) *uri = NULL;
+    if (suite) *suite = NULL;
+    if (comp) *comp = NULL;
     sb_t m;
     sb_init(&m);
     if (read_file(meta_path, &m) < 0) {
@@ -342,18 +416,21 @@ static int read_meta(const char *meta_path, char **uri, char **suite)
     }
     d822_doc doc;
     d822_parse(m.s, m.len, &doc);
-    const char *u = NULL, *su = NULL;
+    const char *u = NULL, *su = NULL, *co = NULL;
     if (doc.n > 0) {
         u = d822_get(&doc.recs[0], "uri");
         su = d822_get(&doc.recs[0], "suite");
+        co = d822_get(&doc.recs[0], "component");
     }
-    if (u)
+    if (u && uri)
         *uri = xstrdup(u);
-    if (su)
+    if (su && suite)
         *suite = xstrdup(su);
+    if (co && comp)
+        *comp = xstrdup(co);
     d822_doc_free(&doc);
     sb_free(&m);
-    return (u && *uri) ? 0 : -1;
+    return (u && uri && *uri) ? 0 : -1;
 }
 
 static int arch_ok(const char *arch, const char *want)
@@ -391,8 +468,8 @@ int idx_download(const char *list_dir, const char *pkg, const char *outdir, char
         /* meta next to it: <file>.meta */
         char *mp = xmalloc(strlen(p) + 1 + 5 + 1);
         sprintf(mp, "%s.meta", p);
-        char *muri = NULL, *msuite = NULL;
-        read_meta(mp, &muri, &msuite);
+        char *muri = NULL, *msuite = NULL, *mcomp = NULL;
+        idx_read_meta(mp, &muri, &msuite, &mcomp);
 
         d822_doc doc;
         d822_parse(content.s, content.len, &doc);
@@ -431,6 +508,7 @@ int idx_download(const char *list_dir, const char *pkg, const char *outdir, char
         d822_doc_free(&doc);
         free(muri);
         free(msuite);
+        free(mcomp);
         free(mp);
         free(p);
         sb_free(&content);
@@ -478,6 +556,147 @@ int idx_download(const char *list_dir, const char *pkg, const char *outdir, char
     sb_free(&url);
     cand_free(&best);
     return 0;
+}
+
+int idx_download_source(const char *list_dir, const char *srcname,
+                        const char *outdir, char **saved_dsc)
+{
+    *saved_dsc = NULL;
+    DIR *d = opendir(list_dir);
+    if (!d) {
+        fprintf(stderr, "reposync: cannot open %s: %s\n", list_dir, strerror(errno));
+        return -1;
+    }
+
+    char *best_ver = NULL;
+    char *best_dir = NULL;
+    char *best_files = NULL;
+    char *best_uri = NULL;
+
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        size_t nl = strlen(de->d_name);
+        if (nl < 9 || strcmp(de->d_name + nl - 8, "_Sources") != 0)
+            continue;
+        char *p = path_join(list_dir, de->d_name);
+        sb_t content;
+        sb_init(&content);
+        if (read_file(p, &content) < 0) {
+            free(p);
+            sb_free(&content);
+            continue;
+        }
+        char *mp = xmalloc(strlen(p) + 1 + 5 + 1);
+        sprintf(mp, "%s.meta", p);
+        char *muri = NULL, *msuite2 = NULL, *mcomp2 = NULL;
+        idx_read_meta(mp, &muri, &msuite2, &mcomp2);
+        free(mp);
+        free(msuite2);
+        free(mcomp2);
+
+        d822_doc doc;
+        d822_parse(content.s, content.len, &doc);
+        size_t i;
+        for (i = 0; i < doc.n; i++) {
+            const d822_rec *r = &doc.recs[i];
+            const char *name = d822_get(r, "package");
+            if (!name || strcmp(name, srcname) != 0)
+                continue;
+            const char *ver = d822_get(r, "version");
+            const char *dir = d822_get(r, "directory");
+            const char *files = d822_get(r, "files");
+            if (!ver || !dir || !files)
+                continue;
+            if (best_ver && deb_vercmp(ver, best_ver) <= 0)
+                continue;
+            free(best_ver); free(best_dir); free(best_files); free(best_uri);
+            best_ver = xstrdup(ver);
+            best_dir = xstrdup(dir);
+            best_files = xstrdup(files);
+            best_uri = muri ? xstrdup(muri) : NULL;
+        }
+        d822_doc_free(&doc);
+        free(muri);
+        free(p);
+        sb_free(&content);
+    }
+    closedir(d);
+
+    if (!best_ver) {
+        fprintf(stderr, "reposync: source package '%s' not found in cached Sources indexes (run update with Sync-Sources: yes)\n", srcname);
+        return -1;
+    }
+    if (!best_uri) {
+        fprintf(stderr, "reposync: no source URI recorded for %s\n", srcname);
+        return -1;
+    }
+
+    /* Files: is a multi-line field: "<md5> <size> <name>" per line */
+    int ok = 1;
+    int dsc_saved = 0;
+    char *fcopy = xstrdup(best_files);
+    char *save = NULL;
+    char *line;
+    for (line = strtok_r(fcopy, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        char *s = line;
+        while (*s == ' ' || *s == '\t')
+            s++;
+        if (!*s)
+            continue;
+        /* skip md5 and size */
+        char *p1 = s;
+        while (*p1 && *p1 != ' ' && *p1 != '\t')
+            p1++;
+        if (!*p1)
+            continue;
+        char *p2 = p1 + 1;
+        while (*p2 == ' ' || *p2 == '\t')
+            p2++;
+        while (*p2 && *p2 != ' ' && *p2 != '\t')
+            p2++;
+        if (!*p2)
+            continue;
+        char *fname = p2 + 1;
+        while (*fname == ' ' || *fname == '\t')
+            fname++;
+        char *fe = fname + strlen(fname);
+        while (fe > fname && (fe[-1] == '\r' || fe[-1] == '\n' || fe[-1] == ' ' || fe[-1] == '\t'))
+            *--fe = '\0';
+        if (!*fname)
+            continue;
+
+        sb_t url;
+        sb_init(&url);
+        sb_printf(&url, "%s/%s/%s", best_uri, best_dir, fname);
+        char *out = path_join(outdir, fname);
+        printf("  downloading %s\n", url.s);
+        if (fetch_url_to_file(url.s, out) < 0) {
+            fprintf(stderr, "reposync: download failed: %s\n", url.s);
+            ok = 0;
+            free(out);
+            sb_free(&url);
+            continue;
+        }
+        printf("  saved %s\n", out);
+        size_t fl = strlen(fname);
+        if (fl > 4 && strcmp(fname + fl - 4, ".dsc") == 0) {
+            *saved_dsc = out; /* hand the .dsc to the import command */
+            dsc_saved = 1;
+        } else {
+            free(out);
+        }
+        sb_free(&url);
+    }
+    free(fcopy);
+    free(best_uri);
+    free(best_ver);
+    free(best_dir);
+    free(best_files);
+    if (!dsc_saved || !*saved_dsc) {
+        fprintf(stderr, "reposync: no .dsc recorded in Files: for %s\n", srcname);
+        return -1;
+    }
+    return ok ? 0 : -1;
 }
 
 int idx_best(const char *list_dir, const char *pkg, d822_rec *out)

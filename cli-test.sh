@@ -64,6 +64,7 @@ chmod +x /tmp/rt/rm.sh
 
 cat > $R/conf/reposync.conf <<'EOF'
 Active-Repo: plain
+Sync-Sources: no
 
 Repo-Type: plain
 Path: /tmp/rt/target

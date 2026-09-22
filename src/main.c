@@ -195,22 +195,45 @@ int main(int argc, char **argv)
             return 1;
         }
         printf("reposync: %zu source(s) from %s\n", n, cfg);
-        int rc = idx_update(lst, srcs, n);
+        /* Sync-Sources is MANDATORY in reposync.conf (yes|no): reposync
+           does not infer whether the backend manages a Sources index. */
+        int sync_sources = 0;
+        char *def_tconf = conf_file_path();
+        const char *tconf = getenv("REPOSYNC_CONF");
+        if (!tconf || !*tconf)
+            tconf = getenv("REPOSYNC_TARGET_CONF"); /* legacy alias */
+        if (!tconf || !*tconf)
+            tconf = def_tconf;
+        rconf_t rc;
+        rconf_init(&rc);
+        if (rconf_load(tconf, &rc) == 0 && rc.sync_sources < 0) {
+            fprintf(stderr, "reposync: Sync-Sources is mandatory in %s (set yes|no)\n", tconf);
+            rconf_free(&rc);
+            free(def_tconf);
+            src_free_all(srcs, n);
+            free(def_cfg);
+            free(def_lst);
+            return 1;
+        }
+        sync_sources = rc.sync_sources;
+        rconf_free(&rc);
+        free(def_tconf);
+        int rc2 = idx_update(lst, srcs, n, sync_sources);
         /* after a successful index fetch, rebuild the local candidates db
            (list/search then read the db, never the network) */
         char *def_db = db_path();
         const char *db = getenv("REPOSYNC_DB");
         if (!db || !*db)
             db = def_db;
-        if (rc == 0) {
+        if (rc2 == 0) {
             if (db_candidates_rebuild(db, lst) < 0)
-                rc = -1;
+                rc2 = -1;
         }
         free(def_db);
         src_free_all(srcs, n);
         free(def_cfg);
         free(def_lst);
-        return rc == 0 ? 0 : 1;
+        return rc2 == 0 ? 0 : 1;
     }
 
     if (strcmp(argv[1], "list") == 0) {

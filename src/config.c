@@ -8,6 +8,7 @@
 void rconf_init(rconf_t *rc)
 {
     memset(rc, 0, sizeof *rc);
+    rc->sync_sources = -1;
 }
 
 void rconf_free(rconf_t *rc)
@@ -18,6 +19,7 @@ void rconf_free(rconf_t *rc)
         free(rc->cmds[i].type);
         free(rc->cmds[i].path);
         free(rc->cmds[i].import_cmd);
+        free(rc->cmds[i].source_import_cmd);
         free(rc->cmds[i].remove_cmd);
     }
     free(rc->cmds);
@@ -52,6 +54,15 @@ int rconf_load(const char *path, rconf_t *rc)
         if (act) {
             free(rc->active);
             rc->active = dup0(act);
+            const char *ss = d822_get(r, "sync-sources");
+            if (ss) {
+                if (strcasecmp(ss, "yes") == 0)
+                    rc->sync_sources = 1;
+                else if (strcasecmp(ss, "no") == 0)
+                    rc->sync_sources = 0;
+                else
+                    fprintf(stderr, "reposync: warning: Sync-Sources must be yes or no (got '%s')\n", ss);
+            }
             continue;
         }
         if (!rtype)
@@ -65,6 +76,7 @@ int rconf_load(const char *path, rconf_t *rc)
         c->type = dup0(rtype);
         c->path = dup0(d822_get(r, "path"));
         c->import_cmd = dup0(d822_get(r, "import-cmd"));
+        c->source_import_cmd = dup0(d822_get(r, "source-import-cmd"));
         c->remove_cmd = dup0(d822_get(r, "remove-cmd"));
     }
     d822_doc_free(&doc);

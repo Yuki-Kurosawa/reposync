@@ -107,7 +107,11 @@ static char *mk_tmpdir(void)
     }
     return d;
 #else
-    char *d = xstrdup("/tmp/reposync-inst-XXXXXX");
+    /* REPOSYNC_TMPDIR overrides the scratch dir (large source closures can
+       exceed /tmp capacity on small tmpfs mounts) */
+    const char *td = getenv("REPOSYNC_TMPDIR");
+    char *d = xmalloc(strlen(td && *td ? td : "/tmp") + 1 + 22);
+    sprintf(d, "%s/reposync-inst-XXXXXX", td && *td ? td : "/tmp");
     if (!mkdtemp(d)) {
         free(d);
         return NULL;
@@ -236,14 +240,56 @@ static void topo_order(candset_t *cs, str_list *ch)
     free(q);
 }
 
-/* Fetch and import every package in cl.changed (deps-first order) via
-   target.import_cmd. Downloads land in a temp dir. Returns 0 on success. */
-static int import_changed(target_t *t, const char *list_dir, str_list *changed)
+/* Substitute %suite% / %comp% tokens in a command template. Templates without
+   the tokens are returned unchanged, so single-suite legacy configs keep
+   working. Returns malloc'd. */
+static char *cmd_subst(const char *templ, const char *suite, const char *comp)
+{
+    sb_t out;
+    sb_init(&out);
+    const char *p = templ;
+    while (*p) {
+        if (strncmp(p, "%suite%", 7) == 0) {
+            if (suite)
+                sb_append_str(&out, suite);
+            p += 7;
+        } else if (strncmp(p, "%comp%", 6) == 0) {
+            if (comp)
+                sb_append_str(&out, comp);
+            p += 6;
+        } else {
+            sb_append_char(&out, *p);
+            p++;
+        }
+    }
+    return sb_detach(&out);
+}
+
+/* Warn (once per import batch) when the target has several declared suites
+   but the command template is not suite-parameterized. */
+static void warn_no_suite_param(const target_t *t, const char *what,
+                                const char *cmd)
+{
+    if (t->suites.n > 1 && !(cmd && strstr(cmd, "%suite%")))
+        fprintf(stderr,
+                "reposync: warning: target declares %zu suites but %s has no "
+                "%%suite%% placeholder; imports use the command as configured\n",
+                t->suites.n, what);
+}
+
+/* Fetch and import every package in changed (deps-first order) via
+   target.import_cmd. Each package is routed to the target (suite, component)
+   chosen by target_map_suite (same-name first; abc-* -> base fallback only);
+   packages with no allowed mapping are skipped with a warning (best-effort
+   sync). Downloads land in a temp dir. Returns 0 on success. */
+static int import_changed(target_t *t, const char *list_dir, candset_t *cs,
+                          str_list *changed)
 {
     if (!t->import_cmd) {
         fprintf(stderr, "reposync: Import-Cmd not set in reposync.conf\n");
         return -1;
     }
+    warn_no_suite_param(t, "Import-Cmd", t->import_cmd);
     char *tmpdir = mk_tmpdir();
     if (!tmpdir) {
         fprintf(stderr, "reposync: mkdtemp failed\n");
@@ -253,17 +299,93 @@ static int import_changed(target_t *t, const char *list_dir, str_list *changed)
     size_t i;
     for (i = 0; i < changed->n; i++) {
         const char *pkg = changed->items[i];
-        char *saved = NULL;
-        if (idx_download(list_dir, pkg, tmpdir, &saved) < 0) {
-            ok = 0;
+        const cand_t *c = candset_find(cs, pkg);
+        if (!c || !c->suite || !c->comp) {
+            fprintf(stderr, "reposync: warning: skipping %s: source suite "
+                    "unknown\n", pkg);
             continue;
         }
-        if (run_cmd(t->import_cmd, saved) < 0) {
+        char *ms = NULL, *mc = NULL;
+        if (target_map_suite(t, c->suite, c->comp, &ms, &mc) == 0) {
+            fprintf(stderr, "reposync: warning: skipping %s: no allowed suite "
+                    "mapping for %s/%s (suite mapping rules)\n",
+                    pkg, c->suite, c->comp);
+            continue;
+        }
+        char *cmd = cmd_subst(t->import_cmd, ms, mc);
+        free(ms);
+        free(mc);
+        char *saved = NULL;
+        if (idx_download(list_dir, pkg, tmpdir, &saved) < 0) {
+            fprintf(stderr, "reposync: cannot download %s\n", pkg);
+            ok = 0;
+            free(cmd);
+            continue;
+        }
+        if (run_cmd(cmd, saved) < 0) {
             ok = 0;
         } else {
             printf("  imported %s\n", pkg);
         }
         free(saved);
+        free(cmd);
+    }
+    rmdir(tmpdir);
+    free(tmpdir);
+    return ok ? 0 : -1;
+}
+
+/* Fetch and import every source package in srcs via target.source_import_cmd.
+   Each source is routed by target_map_suite like binary packages; sources
+   with no allowed mapping are skipped with a warning. Downloads land in a
+   temp dir. Returns 0 on success. */
+static int import_sources(target_t *t, const char *list_dir, srcset_t *ss,
+                          str_list *srcs)
+{
+    if (!t->source_import_cmd) {
+        fprintf(stderr, "reposync: Sync-Sources: yes but Source-Import-Cmd not set in reposync.conf\n");
+        return -1;
+    }
+    warn_no_suite_param(t, "Source-Import-Cmd", t->source_import_cmd);
+    char *tmpdir = mk_tmpdir();
+    if (!tmpdir) {
+        fprintf(stderr, "reposync: mkdtemp failed\n");
+        return -1;
+    }
+    int ok = 1;
+    size_t i;
+    for (i = 0; i < srcs->n; i++) {
+        const char *src = srcs->items[i];
+        const srcpkg_t *s = srcset_find(ss, src);
+        if (!s || !s->suite || !s->comp) {
+            fprintf(stderr, "reposync: warning: skipping source %s: source "
+                    "suite unknown\n", src);
+            continue;
+        }
+        char *ms = NULL, *mc = NULL;
+        if (target_map_suite(t, s->suite, s->comp, &ms, &mc) == 0) {
+            fprintf(stderr, "reposync: warning: skipping source %s: no allowed "
+                    "suite mapping for %s/%s (suite mapping rules)\n",
+                    src, s->suite, s->comp);
+            continue;
+        }
+        char *cmd = cmd_subst(t->source_import_cmd, ms, mc);
+        free(ms);
+        free(mc);
+        char *dsc = NULL;
+        if (idx_download_source(list_dir, src, tmpdir, &dsc) < 0) {
+            fprintf(stderr, "reposync: cannot download source %s\n", src);
+            ok = 0;
+            free(cmd);
+            continue;
+        }
+        if (run_cmd(cmd, dsc) < 0) {
+            ok = 0;
+        } else {
+            printf("  imported source %s\n", src);
+        }
+        free(dsc);
+        free(cmd);
     }
     rmdir(tmpdir);
     free(tmpdir);
@@ -359,8 +481,23 @@ int ops_install(target_t *t, const char *list_dir, int argc, char **argv, int ye
     }
     topo_order(&cs, &cl.changed);
 
-    if (cl.changed.n == 0) {
-        printf("  all requested package(s) already in target repo\n");
+    /* Unified closure (需求.md "仓库后端与 Sources 同步"): with
+       Sync-Sources: yes the import set is the bidirectional closure
+       (binary Depends/Pre-Depends <-> source Build-Depends/Binary),
+       otherwise the plain binary closure. Both sides are filtered against
+       what the target repo already carries at >= upstream version. */
+    srcset_t ss;
+    srcset_init(&ss);
+    str_list bin_import, src_import, src_out, src_bin;
+    sl_init(&bin_import); sl_init(&src_import);
+    sl_init(&src_out); sl_init(&src_bin);
+    int have_sources = 0;
+    pkgset_t tps;            /* snapshot of the REAL target state: sim_closure_solve
+                                 mutates ps as if the closure were applied, so the
+                                 already-present check must not use ps */
+    pkgset_init(&tps);
+    if (target_state(t, &tps, NULL) < 0) {
+        pkgset_free(&tps);
         sl_free(&targets);
         sl_free(&cl.queue);
         sl_free(&cl.changed);
@@ -368,15 +505,70 @@ int ops_install(target_t *t, const char *list_dir, int argc, char **argv, int ye
         pkgset_free(&ps);
         candset_free(&cs);
         d822_doc_free(&tdoc);
+        return -1;
+    }
+    if (t->sync_sources > 0) {
+        if (srcset_load(list_dir, &ss) == 0 &&
+            sim_source_closure(&cs, &ss, t->arch, &targets,
+                               &src_bin, &src_out) == 0) {
+            srcset_t tss;
+            srcset_init(&tss);
+            target_sources_state(t, &tss);
+            size_t si;
+            for (si = 0; si < src_out.n; si++) {
+                const char *sn = src_out.items[si];
+                srcpkg_t *have = srcset_find(&tss, sn);
+                srcpkg_t *up = srcset_find(&ss, sn);
+                if (have && up && deb_vercmp(have->version, up->version) >= 0)
+                    continue; /* already synced at >= upstream */
+                sl_push(&src_import, sn);
+            }
+            srcset_free(&tss);
+            for (si = 0; si < src_bin.n; si++) {
+                const char *bn = src_bin.items[si];
+                cand_t *up = candset_find(&cs, bn);
+                pkg_t *have = pkgset_find(&tps, bn);
+                if (!up)
+                    continue;
+                if (have && deb_vercmp(have->version, up->p.version) >= 0)
+                    continue; /* already at >= upstream */
+                sl_push(&bin_import, bn);
+            }
+            have_sources = 1;
+        }
+    } else {
+        size_t si;
+        for (si = 0; si < cl.changed.n; si++)
+            sl_push(&bin_import, cl.changed.items[si]);
+    }
+    sl_free(&src_out);
+    sl_free(&src_bin);
+
+
+    if (bin_import.n == 0 && src_import.n == 0) {
+        printf("  all requested package(s) already in target repo\n");
+        sl_free(&targets);
+        sl_free(&cl.queue);
+        sl_free(&cl.changed);
+        sl_free(&cl.upgraded);
+        sl_free(&bin_import);
+        sl_free(&src_import);
+        pkgset_free(&tps);
+        srcset_free(&ss);
+        pkgset_free(&ps);
+        candset_free(&cs);
+        d822_doc_free(&tdoc);
         return 0;
     }
 
-    str_list newonly;
-    sl_init(&newonly);
+    str_list newonly, upgraded;
+    sl_init(&newonly); sl_init(&upgraded);
     size_t i;
-    for (i = 0; i < cl.changed.n; i++) {
-        if (!list_contains(&cl.upgraded, cl.changed.items[i]))
-            sl_push(&newonly, cl.changed.items[i]);
+    for (i = 0; i < bin_import.n; i++) {
+        if (pkgset_find(&tps, bin_import.items[i]))
+            sl_push(&upgraded, bin_import.items[i]);
+        else
+            sl_push(&newonly, bin_import.items[i]);
     }
     printf("The following NEW packages will be imported:\n  ");
     for (i = 0; i < newonly.n; i++) {
@@ -385,17 +577,26 @@ int ops_install(target_t *t, const char *list_dir, int argc, char **argv, int ye
         printf("%s ", newonly.items[i]);
     }
     printf("\n");
-    if (cl.upgraded.n) {
+    if (upgraded.n) {
         printf("The following packages will be upgraded in target:\n  ");
-        for (i = 0; i < cl.upgraded.n; i++) {
+        for (i = 0; i < upgraded.n; i++) {
             if (i && i % 6 == 0)
                 printf("\n  ");
-            printf("%s ", cl.upgraded.items[i]);
+            printf("%s ", upgraded.items[i]);
         }
         printf("\n");
     }
-    printf("%zu new, %zu upgraded.\n", newonly.n, cl.upgraded.n);
-    sl_free(&newonly);
+    printf("%zu new, %zu upgraded.\n", newonly.n, upgraded.n);
+    sl_free(&newonly); sl_free(&upgraded);
+    if (have_sources && src_import.n) {
+        printf("The following SOURCE packages will be imported:\n  ");
+        for (i = 0; i < src_import.n; i++) {
+            if (i && i % 6 == 0)
+                printf("\n  ");
+            printf("%s ", src_import.items[i]);
+        }
+        printf("\n%zu source(s).\n", src_import.n);
+    }
 
     if (!confirm("Continue?", yes)) {
         printf("Abort.\n");
@@ -403,25 +604,34 @@ int ops_install(target_t *t, const char *list_dir, int argc, char **argv, int ye
         sl_free(&cl.queue);
         sl_free(&cl.changed);
         sl_free(&cl.upgraded);
+        sl_free(&bin_import);
+        sl_free(&src_import);
+        pkgset_free(&tps);
+        srcset_free(&ss);
         pkgset_free(&ps);
         candset_free(&cs);
         d822_doc_free(&tdoc);
         return 0;
     }
 
-    int rc = import_changed(t, list_dir, &cl.changed);
+    int rc = import_changed(t, list_dir, &cs, &bin_import);
+    if (rc == 0 && have_sources)
+        rc = import_sources(t, list_dir, &ss, &src_import);
     if (rc == 0)
         manual_add(&targets); /* explicit requests survive autoremove */
     sl_free(&targets);
     sl_free(&cl.queue);
     sl_free(&cl.changed);
     sl_free(&cl.upgraded);
+    sl_free(&bin_import);
+    sl_free(&src_import);
+    pkgset_free(&tps);
+    srcset_free(&ss);
     pkgset_free(&ps);
     candset_free(&cs);
     d822_doc_free(&tdoc);
     return rc;
 }
-
 /* ---------- upgrade ---------- */
 
 int ops_upgrade(target_t *t, const char *list_dir, int argc, char **argv, int yes)
@@ -495,7 +705,7 @@ int ops_upgrade(target_t *t, const char *list_dir, int argc, char **argv, int ye
         return 0;
     }
 
-    int rc = import_changed(t, list_dir, &cl.changed);
+    int rc = import_changed(t, list_dir, &cs, &cl.changed);
     sl_free(&targets);
     sl_free(&cl.queue);
     sl_free(&cl.changed);
