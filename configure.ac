@@ -10,6 +10,17 @@ m4_pattern_allow([^PKG_HINT$])
 
 AC_PROG_CC
 AC_PROG_INSTALL
+AC_CANONICAL_HOST
+
+dnl ---- extra libs only the Windows (MinGW-w64) GUI build needs ----
+dnl mingw's libssh2.pc keeps -lws2_32 in Libs.private, which pkg-config
+dnl --libs never emits, so the automake link of reposync-gui/ selftest
+dnl would miss Winsock.  Matches gui/Makefile.win (-lws2_32 -lcrypt32).
+case "$host_os" in
+  *mingw*|*cygwin*) GUI_WIN_LIBS="-lws2_32 -lcrypt32" ;;
+  *)                GUI_WIN_LIBS="" ;;
+esac
+AC_SUBST([GUI_WIN_LIBS])
 
 dnl ---- package-name hint per environment (MSYS2 uses pacman, not Debian names) ----
 case "$MSYSTEM" in
