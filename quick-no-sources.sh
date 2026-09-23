@@ -55,10 +55,10 @@ export REPOSYNC_DB=$R/packages.db
 export REPOSYNC_STATUS=$R/status
 export REPOSYNC_MANUAL=$R/manual
 
-./reposync update > $R/update.log 2>&1 || { echo "UPDATE FAILED"; tail -5 $R/update.log; exit 1; }
+./src/reposync update > $R/update.log 2>&1 || { echo "UPDATE FAILED"; tail -5 $R/update.log; exit 1; }
 echo "cached indexes: $(ls $R/lists | sed 's/.*_//' | sort -u | tr '\n' ' ')"
 ls $R/lists/*_Sources >/dev/null 2>&1 && { echo "FAIL: Sources fetched despite Sync-Sources: no"; exit 1; }
-./reposync install -y app > $R/install.log 2>&1 || { echo "INSTALL FAILED"; tail -10 $R/install.log; exit 1; }
+./src/reposync install -y app > $R/install.log 2>&1 || { echo "INSTALL FAILED"; tail -10 $R/install.log; exit 1; }
 echo "NEW line: $(grep -E 'new, ' $R/install.log)"
 grep -q "SOURCE packages" $R/install.log && { echo "FAIL: source closure ran despite Sync-Sources: no"; exit 1; }
 B=$(zcat $R/target/dists/trixie/main/binary-amd64/Packages.gz 2>/dev/null | grep '^Package:' | awk '{print $2}' | sort)

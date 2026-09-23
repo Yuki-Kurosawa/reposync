@@ -88,35 +88,35 @@ export REPOSYNC_STATUS=$R/status
 export REPOSYNC_MANUAL=$R/manual
 
 echo "=== 0 help (paths) ==="
-./reposync help | sed -n '1,20p'
+./src/reposync help | sed -n '1,20p'
 
 echo "=== 1 update ==="
-./reposync update || { echo "UPDATE FAILED"; exit 1; }
+./src/reposync update || { echo "UPDATE FAILED"; exit 1; }
 
 echo "=== 2 download ==="
-./reposync download hello -o $R/dl || { echo "DOWNLOAD FAILED"; exit 1; }
+./src/reposync download hello -o $R/dl || { echo "DOWNLOAD FAILED"; exit 1; }
 ls -la $R/dl
 
 echo "=== 3 install (Active=plain, exec: cp -t) ==="
-./reposync install -y hello || { echo "INSTALL FAILED"; exit 1; }
+./src/reposync install -y hello || { echo "INSTALL FAILED"; exit 1; }
 echo "target pool:"
 ls $R/target/pool/
 
 echo "=== 4 remove (exec: rm.sh) ==="
-./reposync remove -y hello || { echo "REMOVE FAILED"; exit 1; }
+./src/reposync remove -y hello || { echo "REMOVE FAILED"; exit 1; }
 echo "target pool after remove:"
 ls $R/target/pool/ 2>&1 || true
 
 echo "=== 5 switch Active-Repo to plain-verbose (exec: cp -v -t) ==="
 sed -i 's/Active-Repo: plain/Active-Repo: plain-verbose/' $R/conf/reposync.conf
-./reposync install -y hello || { echo "INSTALL2 FAILED"; exit 1; }
+./src/reposync install -y hello || { echo "INSTALL2 FAILED"; exit 1; }
 
 echo "=== 6 sim install (db path) ==="
-./reposync db-import
-./reposync sim install -y hello || { echo "SIM FAILED"; exit 1; }
+./src/reposync db-import
+./src/reposync sim install -y hello || { echo "SIM FAILED"; exit 1; }
 
 echo "=== 7 list (query) ==="
-./reposync list || { echo "LIST FAILED"; exit 1; }
-./reposync list hello | tail -2 || { echo "LIST HELLO FAILED"; exit 1; }
+./src/reposync list || { echo "LIST FAILED"; exit 1; }
+./src/reposync list hello | tail -2 || { echo "LIST HELLO FAILED"; exit 1; }
 
 echo "=== ALL PASS ==="

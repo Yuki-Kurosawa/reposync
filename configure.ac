@@ -45,5 +45,5 @@ AS_IF([test "x$enable_gui" = xyes], [
 ])
 AM_CONDITIONAL([BUILD_GUI], [test "x$enable_gui" = xyes])
 
-AC_CONFIG_FILES([Makefile gui/Makefile])
+AC_CONFIG_FILES([Makefile src/Makefile gui/Makefile])
 AC_OUTPUT

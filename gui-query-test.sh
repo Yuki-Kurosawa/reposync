@@ -7,6 +7,12 @@ set -e
 echo "=== 0. rebuild CLI test env ==="
 bash /mnt/d/Repo/LinuxTestDrive/reposync/cli-test.sh >/dev/null
 
+# fresh GUI session config: the saved ~/.config/reposync-gui.conf may hold a
+# stale absolute reposync_path from an earlier layout; with a clean HOME the
+# GUI falls back to PATH lookup (reposync -> src/reposync).
+export HOME=/tmp/rt/gui-home
+mkdir -p $HOME/.config
+
 export SDL_VIDEODRIVER=dummy
 export REPOSYNC_DB=/tmp/rt/gui-packages.db
 export REPOSYNC_CONFIG_DIR=/tmp/rt/conf
@@ -15,7 +21,7 @@ export REPOSYNC_CONF=/tmp/rt/conf/reposync.conf
 export REPOSYNC_TARGET=/tmp/rt/conf/target.sources
 export REPOSYNC_STATUS=/tmp/rt/status
 cd /mnt/d/Repo/LinuxTestDrive/reposync/gui
-PATH=/mnt/d/Repo/LinuxTestDrive/reposync:$PATH
+PATH=/mnt/d/Repo/LinuxTestDrive/reposync/src:$PATH
 
 echo "=== 1. GUI selftest (OP_UPDATE via local CLI, writes db) ==="
 ./reposync-gui --gui-selftest 2>/dev/null | tail -6

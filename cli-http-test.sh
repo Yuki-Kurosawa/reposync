@@ -77,19 +77,19 @@ trap "kill $SRV 2>/dev/null" EXIT
 sleep 1
 
 echo "=== 1 update (both sources over http) ==="
-./reposync update || { echo "UPDATE FAILED"; exit 1; }
+./src/reposync update || { echo "UPDATE FAILED"; exit 1; }
 
 echo "=== 2 download (http + size check) ==="
-./reposync download hello -o $R/dl || { echo "DOWNLOAD FAILED"; exit 1; }
+./src/reposync download hello -o $R/dl || { echo "DOWNLOAD FAILED"; exit 1; }
 ls -la $R/dl
 
 echo "=== 3 install (local Import-Cmd on mirrored pool) ==="
-./reposync install -y hello || { echo "INSTALL FAILED"; exit 1; }
+./src/reposync install -y hello || { echo "INSTALL FAILED"; exit 1; }
 echo "local target pool:"
 ls $R/local-target/pool/
 
 echo "=== 4 fetch raw http URL primitive ==="
-./reposync fetch http://127.0.0.1:8791/upstream/dists/trixie/main/binary-amd64/Packages $R/dl/index.txt
+./src/reposync fetch http://127.0.0.1:8791/upstream/dists/trixie/main/binary-amd64/Packages $R/dl/index.txt
 head -3 $R/dl/index.txt
 
 echo "=== HTTP TEST PASS ==="

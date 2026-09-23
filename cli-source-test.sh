@@ -69,7 +69,7 @@ export REPOSYNC_MANUAL=$R/manual
 export REPOSYNC_TMPDIR=$TMPDIR_BIG
 
 echo "=== 1 update (Packages + Sources, Sync-Sources: yes) ==="
-./reposync update || { echo "UPDATE FAILED"; exit 1; }
+./src/reposync update || { echo "UPDATE FAILED"; exit 1; }
 echo "cached indexes:"
 ls $R/lists | sed 's/\..*//' | sort -u | tr '\n' ' '; echo
 SRC_CACHE=$(ls $R/lists/*_Sources 2>/dev/null | head -1)
@@ -77,7 +77,7 @@ SRC_CACHE=$(ls $R/lists/*_Sources 2>/dev/null | head -1)
 echo "source records: $(grep -c '^Package:' $SRC_CACHE)"
 
 echo "=== 2 install hello (bidirectional closure) ==="
-./reposync install -y hello > $R/install.log 2>&1 || { echo "INSTALL FAILED"; tail -30 $R/install.log; exit 1; }
+./src/reposync install -y hello > $R/install.log 2>&1 || { echo "INSTALL FAILED"; tail -30 $R/install.log; exit 1; }
 grep -c '^  imported ' $R/install.log | xargs echo "binary imported:"
 grep -c '^  imported source ' $R/install.log | xargs echo "source imported:"
 echo "--- closure plan excerpt ---"
@@ -94,6 +94,6 @@ echo "hello source in index:  $(grep -c '^Package: hello$' $R/target/dists/trixi
 echo "hello .dsc in pool:     $(find $R/target/pool -name 'hello_*.dsc' | wc -l)"
 
 echo "=== 4 idempotent re-run: nothing to import ==="
-./reposync install -y hello 2>&1 | tail -2
+./src/reposync install -y hello 2>&1 | tail -2
 
 echo "=== SOURCES SYNC TEST PASS ==="

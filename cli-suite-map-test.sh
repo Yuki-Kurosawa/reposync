@@ -28,7 +28,7 @@ mkdir -p $R/upstream/dists/abc/main/binary-amd64 \
          $R/target/srcpool/abc $R/target/srcpool/abc-updates \
          $R/tconf
 
-BIN=$PWD/reposync
+BIN=$PWD/src/reposync
 export REPOSYNC_CONFIG_DIR=$R/conf
 export REPOSYNC_LIST_DIR=$R/lists
 export REPOSYNC_TARGET=$R/tconf/target.sources

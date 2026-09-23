@@ -132,10 +132,10 @@ export REPOSYNC_STATUS=$R/status
 export REPOSYNC_MANUAL=$R/manual
 
 echo "=== 1 update (Sync-Sources: yes) ==="
-./reposync update || { echo "UPDATE FAILED"; exit 1; }
+./src/reposync update || { echo "UPDATE FAILED"; exit 1; }
 
 echo "=== 2 install app (bidirectional closure) ==="
-./reposync install -y app > $R/install.log 2>&1 || { echo "INSTALL FAILED"; tail -20 $R/install.log; exit 1; }
+./src/reposync install -y app > $R/install.log 2>&1 || { echo "INSTALL FAILED"; tail -20 $R/install.log; exit 1; }
 grep -E "NEW packages|SOURCE packages|new,|source" $R/install.log | head -6
 echo "binary imported: $(grep -c '^  imported ' $R/install.log)"
 echo "source imported: $(grep -c '^  imported source ' $R/install.log)"
@@ -157,7 +157,7 @@ done
 grep -A3 "SOURCE packages" $R/install.log | grep -q "liby" || { echo "closure missed liby"; FAIL=1; }
 
 echo "=== 4 idempotent re-run ==="
-OUT=$(./reposync install -y app 2>&1)
+OUT=$(./src/reposync install -y app 2>&1)
 echo "$OUT" | tail -2
 echo "$OUT" | grep -q "already in target repo" || { echo "NOT idempotent"; FAIL=1; }
 
