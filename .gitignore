@@ -4,6 +4,9 @@ autom4te.cache/
 config.log
 config.status
 configure
+configure~
+configure.ac~
+*~
 compile
 config.guess
 config.sub
