@@ -1,0 +1,28 @@
+# autotools generated / build artifacts (never commit)
+aclocal.m4
+autom4te.cache/
+config.log
+config.status
+configure
+compile
+config.guess
+config.sub
+depcomp
+install-sh
+missing
+Makefile
+Makefile.in
+gui/Makefile
+gui/Makefile.in
+
+# build artifacts
+*.o
+*.lo
+*.a
+.deps/
+.libs/
+reposync
+gui/reposync-gui
+gui/selftest
+gui/qt
+gui/app-qt.o

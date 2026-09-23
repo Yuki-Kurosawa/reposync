@@ -1,6 +1,8 @@
 #!/bin/bash
-# combo.sh - build, then upstream via mini test, then Sync-Sources:no regression, in ONE wsl session
+# combo.sh - autotools build, then upstream via mini test, then Sync-Sources:no regression, in ONE wsl session
 cd /mnt/d/Repo/LinuxTestDrive/reposync || exit 1
+autoreconf -i > /tmp/combo-cfg.log 2>&1
+./configure >> /tmp/combo-cfg.log 2>&1 || { echo CFG_FAIL; tail -5 /tmp/combo-cfg.log; exit 1; }
 make > /tmp/combo-make.log 2>&1 || { echo MAKE_FAIL; tail -5 /tmp/combo-make.log; exit 1; }
 bash mini-source-test.sh > /tmp/combo-mini.log 2>&1
 echo "mini_exit=$?"
