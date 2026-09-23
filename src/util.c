@@ -9,6 +9,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <process.h>
+#include <direct.h>   /* _mkdir */
 #define PATHSEP_CHAR '\\'
 #else
 #include <unistd.h>
@@ -26,18 +27,21 @@ const char *native_deb_arch(void)
     static const char *cached = NULL;
     if (cached)
         return cached;
-    static char buf[32];
 #ifdef _WIN32
+    /* GetNativeSystemInfo already yields canonical names; no string
+       comparisons are needed here (avoids GCC -Wstring-compare on
+       unreachable branches). */
     SYSTEM_INFO si;
     GetNativeSystemInfo(&si);
-    const char *m = "amd64";
     switch (si.wProcessorArchitecture) {
-    case PROCESSOR_ARCHITECTURE_AMD64: m = "amd64"; break;
-    case PROCESSOR_ARCHITECTURE_ARM64: m = "arm64"; break;
-    case PROCESSOR_ARCHITECTURE_INTEL: m = "i386"; break;
-    default: m = "amd64"; break;
+    case PROCESSOR_ARCHITECTURE_AMD64: cached = "amd64"; break;
+    case PROCESSOR_ARCHITECTURE_ARM64: cached = "arm64"; break;
+    case PROCESSOR_ARCHITECTURE_INTEL: cached = "i386"; break;
+    default: cached = "amd64"; break;
     }
+    return cached;
 #else
+    static char buf[32];
     FILE *f = popen("uname -m", "r");
     const char *m = "amd64";
     if (f && fgets(buf, sizeof buf, f)) {
@@ -48,28 +52,28 @@ const char *native_deb_arch(void)
     }
     if (f)
         pclose(f);
-#endif
 
-    if (strcmp(m, "x86_64") == 0 || strcmp(m, "amd64") == 0)
-        cached = "amd64";
-    else if (strcmp(m, "aarch64") == 0 || strcmp(m, "arm64") == 0)
-        cached = "arm64";
-    else if (strcmp(m, "i686") == 0 || strcmp(m, "i386") == 0 || strcmp(m, "x86") == 0)
-        cached = "i386";
-    else if (strcmp(m, "armv7l") == 0 || strcmp(m, "armhf") == 0)
-        cached = "armhf";
-    else if (strcmp(m, "riscv64") == 0)
-        cached = "riscv64";
-    else if (strcmp(m, "ppc64le") == 0)
-        cached = "ppc64el";
-    else if (strcmp(m, "s390x") == 0)
-        cached = "s390x";
-    else {
-        static char fallback[32];
-        snprintf(fallback, sizeof fallback, "%s", m);
-        cached = fallback;
+    static const struct { const char *raw; const char *canon; } map[] = {
+        { "x86_64",  "amd64" },  { "amd64",  "amd64" },
+        { "aarch64", "arm64" },  { "arm64",  "arm64" },
+        { "i686",    "i386" },   { "i386",   "i386" }, { "x86", "i386" },
+        { "armv7l",  "armhf" },  { "armhf",  "armhf" },
+        { "riscv64", "riscv64" },
+        { "ppc64le", "ppc64el" },
+        { "s390x",   "s390x" },
+    };
+    size_t i;
+    for (i = 0; i < sizeof map / sizeof map[0]; i++) {
+        if (strcmp(m, map[i].raw) == 0) {
+            cached = map[i].canon;
+            return cached;
+        }
     }
+    static char fallback[32];
+    snprintf(fallback, sizeof fallback, "%s", m);
+    cached = fallback;
     return cached;
+#endif
 }
 
 void *xmalloc(size_t n)
@@ -102,6 +106,9 @@ char *xstrdup(const char *s)
 
 int mkdir_p(const char *path, mode_t mode)
 {
+#ifdef _WIN32
+    (void)mode;   /* _mkdir() takes no mode argument */
+#endif
     sb_t tmp;
     sb_init(&tmp);
     const char *p = path;
