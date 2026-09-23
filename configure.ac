@@ -4,6 +4,10 @@ AC_INIT([reposync], [0.1.0], [yuki@ksyuki.com])
 AC_CONFIG_SRCDIR([src/main.c])
 AM_INIT_AUTOMAKE([foreign subdir-objects])
 
+dnl PKG_HINT is a shell variable, not an m4 macro; silence autoconf's
+dnl "possibly undefined macro" check for the all-caps token.
+m4_pattern_allow([^PKG_HINT$])
+
 AC_PROG_CC
 AC_PROG_INSTALL
 
