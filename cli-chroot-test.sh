@@ -75,7 +75,7 @@ export REPOSYNC_STATUS=$R/status
 export REPOSYNC_MANUAL=$R/manual
 
 echo "=== 1 update from real Debian trixie (http) ==="
-./reposync update || { echo "UPDATE FAILED"; exit 1; }
+./src/reposync update || { echo "UPDATE FAILED"; exit 1; }
 
 echo "=== 2 required list = debootstrap's minbase definition (Priority: required + apt) ==="
 : > $R/important.txt
@@ -92,7 +92,7 @@ grep -E '^(bash|dpkg|coreutils|libc6|apt|debconf|tar|gzip)$' $R/important.txt | 
 echo "sync list size: $(wc -l < $R/important.txt)"
 
 echo "=== 3 install the list -> reprepro imports + regenerates index ==="
-./reposync install -y $(cat $R/important.txt) > $R/install.log 2>&1 \
+./src/reposync install -y $(cat $R/important.txt) > $R/install.log 2>&1 \
   || { echo "INSTALL FAILED"; tail -20 $R/install.log; exit 1; }
 grep -c '^  imported ' $R/install.log | xargs echo "imported:"
 tail -3 $R/install.log
